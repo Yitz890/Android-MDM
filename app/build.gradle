@@ -1,0 +1,39 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.localwebfilter.proxy'
+    // compileSdk 34 (not 35) so the build works with a widely available SDK set.
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.localwebfilter.proxy"
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName "1.0.0"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            shrinkResources false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    androidResources {
+        generateLocaleConfig false
+    }
+}
+
+dependencies {
+    // Only BouncyCastle is vendored (local jars in /libs) for on-device CA and
+    // leaf-certificate generation; everything else uses the framework + JDK.
+    implementation fileTree(dir: rootProject.file('libs'), include: ['*.jar'])
+}
