@@ -55,8 +55,6 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 
-import javax.crypto.SecretKey;
-import javax.crypto.spec.SecretKeySpec;
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLSocket;
@@ -75,7 +73,12 @@ public final class FilterProxy implements Runnable {
 
     public static volatile boolean running;
     private static final List<Socket> live = new CopyOnWriteArrayList<>();
-    private static final Map<String, SSLSocketFactory> ctxCache = new ConcurrentHashMap<>();
+    private static final Map<String, SSLContext> ctxCache = new ConcurrentHashMap<>();
+    /** Socket -> hostname tag (Socket has no attachment slot on Android). */
+    private static final Map<Socket, String> tags = new ConcurrentHashMap<>();
+
+    static void tag(Socket s, String host) { if (s != null && host != null) tags.put(s, host); }
+    static String tagOf(Socket s) { return s == null ? null : tags.get(s); }
 
     private final Context ctx;
     private final Config cfg;
@@ -146,8 +149,8 @@ public final class FilterProxy implements Runnable {
             java.util.Set<String> gone = c.expiredSites();
             if (gone.isEmpty()) return;
             for (Socket s : live) {
-                Object tag = s.getAttachment();
-                if (tag instanceof String && gone.contains(Config.mainDomain((String) tag))) {
+                String tg = tagOf(s);
+                if (tg != null && gone.contains(Config.mainDomain(tg))) {
                     try { s.close(); } catch (IOException ignored) {}
                 }
             }
@@ -180,7 +183,7 @@ public final class FilterProxy implements Runnable {
             if (host == null || host.isEmpty()) { close(client); return; }
             host = host.toLowerCase(Locale.US);
             hostTag = host;
-            client.setAttachment(host);
+            tag(client, host);
             cfg.noteHost(host);
 
             boolean allow = decide(host);
@@ -202,6 +205,7 @@ public final class FilterProxy implements Runnable {
             }
         } finally {
             live.remove(client);
+            tags.remove(client);
             close(client);
         }
     }
@@ -232,8 +236,9 @@ public final class FilterProxy implements Runnable {
         out.write("HTTP/1.1 200 Connection Established\r\nProxy-agent: LocalWebFilter\r\n\r\n"
                 .getBytes(StandardCharsets.US_ASCII));
         out.flush();
+        Timeout.off(client);
         live.add(up);
-        up.setAttachment(host);
+        tag(up, host);
         final Socket cu = up;
         Thread t2 = new Thread(() -> pump(cu, client), "pump-up");
         t2.setDaemon(true);
@@ -268,7 +273,7 @@ public final class FilterProxy implements Runnable {
             tls = (SSLSocket) f.createSocket(client, host, port, true);
             tls.setUseClientMode(false);
             live.add(tls);
-            tls.setAttachment(host);
+            tag(tls, host);
             tls.startHandshake();
             BufferedReader in = reader(tls.getInputStream());
             RequestLine rl = readHead(in);
@@ -283,7 +288,7 @@ public final class FilterProxy implements Runnable {
             // browser refused our cert / went away: fall back to killing the tunnel
             try { client.close(); } catch (IOException ignored) {}
         } finally {
-            if (tls != null) live.remove(tls);
+            if (tls != null) { live.remove(tls); tags.remove(tls); }
         }
     }
 
@@ -293,7 +298,7 @@ public final class FilterProxy implements Runnable {
                              RequestLine rl, String host, int port) throws IOException {
         Socket up = new Socket(InetAddress.getByName(host), port);
         live.add(up);
-        up.setAttachment(host);
+        tag(up, host);
         StringBuilder req = new StringBuilder();
         req.append(rl.method).append(' ').append(rl.target).append(" HTTP/1.1\r\n");
         for (String h : rl.headers) {
@@ -434,13 +439,8 @@ public final class FilterProxy implements Runnable {
     }
 
     private SSLContext contextFor(String host) {
-        SSLSocketFactory cached = ctxCache.get(host);
-        if (cached != null) {
-            try {
-                SSLContext c = SSLContext.getInstance("TLS");
-                // rebuild cheaply: store contexts instead of factories
-            } catch (Exception ignored) {}
-        }
+        SSLContext cached = ctxCache.get(host);
+        if (cached != null) return cached;
         try {
             KeyPairGenerator g = KeyPairGenerator.getInstance("RSA");
             g.initialize(2048, new SecureRandom());
@@ -458,7 +458,6 @@ public final class FilterProxy implements Runnable {
             X509Certificate leafCert = new JcaX509CertificateConverter().getCertificate(h);
 
             KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
-            SecretKey sk = new SecretKeySpec(new byte[]{1}, "AES"); // dummy password for in-memory ks
             java.security.KeyStore ks = java.security.KeyStore.getInstance("PKCS12");
             char[] pw = "lwf".toCharArray();
             ks.load(null, pw);
@@ -466,7 +465,7 @@ public final class FilterProxy implements Runnable {
 
             SSLContext sc = SSLContext.getInstance("TLSv1.2");
             sc.init(kmf.getKeyManagers(), null, new SecureRandom());
-            ctxCache.put(host, sc.getSocketFactory());
+            ctxCache.put(host, sc);
             return sc;
         } catch (Exception e) {
             Log.write("leaf cert for " + host + ": " + e);

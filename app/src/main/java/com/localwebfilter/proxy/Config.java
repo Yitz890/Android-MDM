@@ -51,6 +51,14 @@ public final class Config {
     /** The one app that is always reachable so the child can request access. */
     public static final String SELF_PACKAGE = "com.localwebfilter.proxy";
 
+    /** Packages whose screens are guarded (settings / installs / debugging). */
+    public static final String[] GUARD_PKGS = {
+            "com.android.settings", "com.samsung.android.settings",
+            "com.google.android.settings.intelligence", "com.android.systemui",
+            "com.android.vending", "com.google.android.packageinstaller",
+            "com.android.permissioncontroller", "com.google.android.packageinstaller"
+    };
+
     private static Config sInstance;
     private final File dir;
     private final SharedPreferences prefs;
@@ -65,6 +73,11 @@ public final class Config {
 
     public static synchronized Config get(Context c) {
         if (sInstance == null) sInstance = new Config(c.getApplicationContext());
+        return sInstance;
+    }
+
+    /** Same as get() but never creates: returns null before the app context exists. */
+    public static synchronized Config peek() {
         return sInstance;
     }
 
